@@ -106,7 +106,11 @@
     NSString* src = [command argumentAtIndex:0 withDefault:nil];
     NSString* type = [command argumentAtIndex:2];
     BOOL local = [type isEqualToString:@"local"];
-
+    //adding args here as needed - dhis
+    BOOL copyRootApp = [[command argumentAtIndex:5 withDefault:@(NO)] boolValue];
+    BOOL copyCordovaAssets = [[command argumentAtIndex:4 withDefault:@(NO)] boolValue];
+    BOOL copyIgnore = [[command argumentAtIndex:9 withDefault:@(NO)] boolValue];
+    
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSString* appId = [command argumentAtIndex:1];
     NSURL* storageDirectory = [ContentSync getStorageDirectory];
@@ -115,8 +119,15 @@
 
     if(local == YES) {
         NSLog(@"Requesting local copy of %@", appId);
-        if([fileManager fileExistsAtPath:[appPath path]]) {
-            NSLog(@"Found local copy %@", [appPath path]);
+        
+        
+        //if([fileManager fileExistsAtPath:[appPath path]]) {
+        
+        if(copyIgnore == YES) {
+            
+            //NSLog(@"Found local copy %@", [appPath path]);
+            NSLog(@"copyIgnore set - return %@", [appPath path]);
+            
             CDVPluginResult *pluginResult = nil;
 
             NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
@@ -127,17 +138,29 @@
             [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
             return;
         }
+	//TODO remove unnecessary else - dhis
+        else {
+            //NSLog(@"Could not find local copy %@", [appPath path]);
+            NSLog(@"copyIgnore not set %@", [appPath path]);
+        }
     }
-
-    BOOL copyRootApp = [[command argumentAtIndex:5 withDefault:@(NO)] boolValue];
-
-    if(copyRootApp == YES) {
+    
+    //dhis
+    //BOOL copyRootApp = [[command argumentAtIndex:5 withDefault:@(NO)] boolValue];
+    
+    if(copyRootApp == YES || copyCordovaAssets == YES) {
         CDVPluginResult *pluginResult = nil;
         NSError* error = nil;
-
+        
+        //TODO use fileexistsAtpath instead of createDirectory on existing path (even though it returns success) - dhis
+        //if([fileManager fileExistsAtPath:[appPath path]]) {
+        //  NSLog(@"already have local copy %@", [appPath path]);
+        //}
+        // else {
         NSLog(@"Creating app directory %@", [appPath path]);
         [fileManager createDirectoryAtPath:[appPath path] withIntermediateDirectories:YES attributes:nil error:&error];
-
+        //}
+        
         NSError* errorSetting = nil;
         BOOL success = [appPath setResourceValue: [NSNumber numberWithBool: YES]
                                           forKey: NSURLIsExcludedFromBackupKey error: &errorSetting];
@@ -145,12 +168,16 @@
         if(success == NO) {
             NSLog(@"WARNING: %@ might be backed up to iCloud!", [appPath path]);
         }
-
+        //}  //end dhis
+        
         if(error != nil) {
             pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:LOCAL_ERR];
             NSLog(@"%@", [error localizedDescription]);
-        } else {
-            [self copyCordovaAssets:[appPath path] copyRootApp:YES];
+        }
+        else
+        {
+            //calling copy method depending on copyRootApp OR copyCordovaAssets args - dhis
+            [self copyCordovaAssets:[appPath path] copyRootApp:copyRootApp];
             if(src == nil) {
                 NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
                 [message setObject:[appPath path] forKey:@"localPath"];

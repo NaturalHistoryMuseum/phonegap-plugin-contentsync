@@ -408,6 +408,11 @@ public class Sync extends CordovaPlugin {
             copyCordovaAssets = args.getBoolean(4);
         }
         final String manifestFile = args.getString(8);
+
+        //dhis added
+        final boolean copyIgnore = args.getBoolean(9);
+
+
         Log.d(LOG_TAG, "sync called with id = " + id + " and src = " + src + "!");
 
         final ProgressEvent progress = createProgressEvent(id);
@@ -438,7 +443,9 @@ public class Sync extends CordovaPlugin {
                 File dir = new File(outputDirectory);
                 Log.d(LOG_TAG, "dir = " + dir.exists());
 
-                if (type.equals(TYPE_LOCAL) && !dir.exists()) {
+                
+
+                if (type.equals(TYPE_LOCAL) && !copyIgnore) {
                     if ("null".equals(src) && (copyRootApp || copyCordovaAssets)) {
                         if (copyRootApp) {
                             copyRootApp(outputDirectory, manifestFile);
