@@ -80,11 +80,6 @@ var ContentSync = function(options) {
         options.manifest = "";
     }
 
-        //dhis added
-      if (typeof options.copyIgnore === 'undefined') {
-        options.copyIgnore = true;
-    }
-
     // store the options to this object instance
     this.options = options;
 
@@ -106,7 +101,7 @@ var ContentSync = function(options) {
 
     // wait at least one process tick to allow event subscriptions
     setTimeout(function() {
-        exec(success, fail, 'Sync', 'sync', [options.src, options.id, options.type, options.headers, options.copyCordovaAssets, options.copyRootApp, options.timeout, options.trustHost, options.manifest, options.copyIgnore]);  //dhis added copyIgnore
+        exec(success, fail, 'Sync', 'sync', [options.src, options.id, options.type, options.headers, options.copyCordovaAssets, options.copyRootApp, options.timeout, options.trustHost, options.manifest]);
     }, 10);
 };
 

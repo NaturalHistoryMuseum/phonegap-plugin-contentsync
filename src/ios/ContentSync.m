@@ -102,15 +102,32 @@
 }
 #endif // TAGET_OS_IOS
 
++ (BOOL) hasAppBeenUpdated {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString* previousVersion = [defaults objectForKey:@"PREVIOUS_VERSION"];
+
+    NSDictionary *infoDictionary = [[NSBundle mainBundle] infoDictionary];
+    NSString* currentVersion = [infoDictionary objectForKey:@"CFBundleShortVersionString"];
+
+    NSLog(@"previous version %@", previousVersion);
+    NSLog(@"current version %@", currentVersion);
+
+    // set previous version to current version
+    [defaults setObject:currentVersion forKey:@"PREVIOUS_VERSION"];
+    [defaults synchronize];
+
+    if ([currentVersion compare:previousVersion options:NSNumericSearch] == NSOrderedDescending) {
+        NSLog(@"current version is newer than previous version");;
+    }
+
+    return ([currentVersion compare:previousVersion options:NSNumericSearch] == NSOrderedDescending);
+}
+
 - (void)sync:(CDVInvokedUrlCommand*)command {
     NSString* src = [command argumentAtIndex:0 withDefault:nil];
     NSString* type = [command argumentAtIndex:2];
     BOOL local = [type isEqualToString:@"local"];
-    //adding args here as needed - dhis
-    BOOL copyRootApp = [[command argumentAtIndex:5 withDefault:@(NO)] boolValue];
-    BOOL copyCordovaAssets = [[command argumentAtIndex:4 withDefault:@(NO)] boolValue];
-    BOOL copyIgnore = [[command argumentAtIndex:9 withDefault:@(NO)] boolValue];
-    
+
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSString* appId = [command argumentAtIndex:1];
     NSURL* storageDirectory = [ContentSync getStorageDirectory];
@@ -119,48 +136,31 @@
 
     if(local == YES) {
         NSLog(@"Requesting local copy of %@", appId);
-        
-        
-        //if([fileManager fileExistsAtPath:[appPath path]]) {
-        
-        if(copyIgnore == YES) {
-            
-            //NSLog(@"Found local copy %@", [appPath path]);
-            NSLog(@"copyIgnore set - return %@", [appPath path]);
-            
-            CDVPluginResult *pluginResult = nil;
+        if([fileManager fileExistsAtPath:[appPath path]]) {
+            if (![ContentSync hasAppBeenUpdated]) {
+                NSLog(@"Found local copy %@", [appPath path]);
+                CDVPluginResult *pluginResult = nil;
 
-            NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
-            [message setObject:[appPath path] forKey:@"localPath"];
-            [message setObject:@"true" forKey:@"cached"];
-            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:message];
+                NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+                [message setObject:[appPath path] forKey:@"localPath"];
+                [message setObject:@"true" forKey:@"cached"];
+                pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:message];
 
-            [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
-            return;
-        }
-	//TODO remove unnecessary else - dhis
-        else {
-            //NSLog(@"Could not find local copy %@", [appPath path]);
-            NSLog(@"copyIgnore not set %@", [appPath path]);
+                [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+                return;
+            }
         }
     }
-    
-    //dhis
-    //BOOL copyRootApp = [[command argumentAtIndex:5 withDefault:@(NO)] boolValue];
-    
-    if(copyRootApp == YES || copyCordovaAssets == YES) {
+
+    BOOL copyRootApp = [[command argumentAtIndex:5 withDefault:@(NO)] boolValue];
+
+    if(copyRootApp == YES) {
         CDVPluginResult *pluginResult = nil;
         NSError* error = nil;
-        
-        //TODO use fileexistsAtpath instead of createDirectory on existing path (even though it returns success) - dhis
-        //if([fileManager fileExistsAtPath:[appPath path]]) {
-        //  NSLog(@"already have local copy %@", [appPath path]);
-        //}
-        // else {
+
         NSLog(@"Creating app directory %@", [appPath path]);
         [fileManager createDirectoryAtPath:[appPath path] withIntermediateDirectories:YES attributes:nil error:&error];
-        //}
-        
+
         NSError* errorSetting = nil;
         BOOL success = [appPath setResourceValue: [NSNumber numberWithBool: YES]
                                           forKey: NSURLIsExcludedFromBackupKey error: &errorSetting];
@@ -168,16 +168,15 @@
         if(success == NO) {
             NSLog(@"WARNING: %@ might be backed up to iCloud!", [appPath path]);
         }
-        //}  //end dhis
-        
+
         if(error != nil) {
-            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:LOCAL_ERR];
+            NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+            [message setObject:[NSNumber numberWithInteger:LOCAL_ERR] forKey:@"type"];
+            [message setObject:[NSNumber numberWithInteger:-1] forKey:@"responseCode"];
+            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
             NSLog(@"%@", [error localizedDescription]);
-        }
-        else
-        {
-            //calling copy method depending on copyRootApp OR copyCordovaAssets args - dhis
-            [self copyCordovaAssets:[appPath path] copyRootApp:copyRootApp];
+        } else {
+            [self copyCordovaAssets:[appPath path] copyRootApp:YES];
             if(src == nil) {
                 NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
                 [message setObject:[appPath path] forKey:@"localPath"];
@@ -306,7 +305,10 @@
 
     } else {
         NSLog(@"Invalid src URL %@", src);
-        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:INVALID_URL_ERR];
+        NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+        [message setObject:[NSNumber numberWithInteger:INVALID_URL_ERR] forKey:@"type"];
+        [message setObject:[NSNumber numberWithInteger:-1] forKey:@"responseCode"];
+        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
     }
 
     [pluginResult setKeepCallbackAsBool:YES];
@@ -462,7 +464,12 @@
         NSLog(@"Sync Failed - Copy Failed - %@", [errorCopy localizedDescription]);
 
         CDVPluginResult* pluginResult = nil;
-        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:CONNECTION_ERR];
+
+        NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+        [message setObject:[NSNumber numberWithInteger:CONNECTION_ERR] forKey:@"type"];
+        [message setObject:[NSNumber numberWithInteger:-1] forKey:@"responseCode"];
+        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
+
         [self.commandDelegate sendPluginResult:pluginResult callbackId:sTask.command.callbackId];
     }
 }
@@ -477,7 +484,12 @@
         if(error == nil) {
             if([(NSHTTPURLResponse*)[task response] statusCode] != 200) {
                 NSLog(@"Task: %@ completed with HTTP Error Code: %ld", task, (long)[(NSHTTPURLResponse*)[task response] statusCode]);
-                pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:CONNECTION_ERR];
+
+                NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+                [message setObject:[NSNumber numberWithInteger:CONNECTION_ERR] forKey:@"type"];
+                [message setObject:[NSNumber numberWithInteger:[(NSHTTPURLResponse*)[task response] statusCode]] forKey:@"responseCode"];
+                pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
+
                 NSFileManager *fileManager = [NSFileManager defaultManager];
                 if([fileManager fileExistsAtPath:[sTask archivePath]]) {
                     NSLog(@"Deleting archive. It's probably an HTTP Error Page anyways");
@@ -502,7 +514,12 @@
             }
         } else {
             NSLog(@"Task: %@ completed with error: %@", task, [error localizedDescription]);
-            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:CONNECTION_ERR];
+
+            NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+            [message setObject:[NSNumber numberWithInteger:CONNECTION_ERR] forKey:@"type"];
+            [message setObject:[NSNumber numberWithInteger:[(NSHTTPURLResponse*)[task response] statusCode]] forKey:@"responseCode"];
+            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
+
             [self removeSyncTask:sTask];
         }
         if(![[error localizedDescription]  isEqual: @"cancelled"]) {
@@ -537,7 +554,11 @@
             NSError *error;
             if(![SSZipArchive unzipFileAtPath:[sourceURL path] toDestination:[destinationURL path] overwrite:YES password:nil error:&error delegate:weakSelf]) {
                 NSLog(@"%@ - %@", @"Error occurred during unzipping", [error localizedDescription]);
-                pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:UNZIP_ERR];
+
+                NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+                [message setObject:[NSNumber numberWithInteger:UNZIP_ERR] forKey:@"type"];
+                [message setObject:[NSNumber numberWithInteger:-1] forKey:@"responseCode"];
+                pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
             } else {
                 pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
                 // clean up zip archive
@@ -548,7 +569,10 @@
         }
         @catch (NSException *exception) {
             NSLog(@"%@ - %@", @"Error occurred during unzipping", [exception debugDescription]);
-            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:UNZIP_ERR];
+            NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+            [message setObject:[NSNumber numberWithInteger:UNZIP_ERR] forKey:@"type"];
+            [message setObject:[NSNumber numberWithInteger:-1] forKey:@"responseCode"];
+            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
         }
         [pluginResult setKeepCallbackAsBool:YES];
 
@@ -694,10 +718,10 @@
         }
         else
         {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
             configuration = [NSURLSessionConfiguration backgroundSessionConfiguration:sessionId];
-            #pragma clang diagnostic pop
+#pragma clang diagnostic pop
         }
 #else
 #if __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_0
