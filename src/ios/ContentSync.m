@@ -102,32 +102,45 @@
 }
 #endif // TAGET_OS_IOS
 
++ (BOOL) hasAppBeenUpdated {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString* previousVersion = [defaults objectForKey:@"PREVIOUS_VERSION"];
+
+    NSDictionary *infoDictionary = [[NSBundle mainBundle] infoDictionary];
+    NSString* currentVersion = [infoDictionary objectForKey:@"CFBundleShortVersionString"];
+
+    NSLog(@"previous version %@", previousVersion);
+    NSLog(@"current version %@", currentVersion);
+
+    // set previous version to current version
+    [defaults setObject:currentVersion forKey:@"PREVIOUS_VERSION"];
+    [defaults synchronize];
+
+    if ([currentVersion compare:previousVersion options:NSNumericSearch] == NSOrderedDescending) {
+        NSLog(@"current version is newer than previous version");;
+    }
+
+    return ([currentVersion compare:previousVersion options:NSNumericSearch] == NSOrderedDescending);
+}
+
 - (void)sync:(CDVInvokedUrlCommand*)command {
     NSString* src = [command argumentAtIndex:0 withDefault:nil];
     NSString* type = [command argumentAtIndex:2];
     BOOL local = [type isEqualToString:@"local"];
-    //adding args here as needed - dhis
-    BOOL copyRootApp = [[command argumentAtIndex:5 withDefault:@(NO)] boolValue];
-    BOOL copyCordovaAssets = [[command argumentAtIndex:4 withDefault:@(NO)] boolValue];
-    BOOL copyIgnore = [[command argumentAtIndex:9 withDefault:@(NO)] boolValue];
-    
+
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSString* appId = [command argumentAtIndex:1];
     NSURL* storageDirectory = [ContentSync getStorageDirectory];
     NSURL *appPath = [storageDirectory URLByAppendingPathComponent:appId];
     NSLog(@"appPath %@", appPath);
+    
+    BOOL appUpdated = [ContentSync hasAppBeenUpdated];
+    BOOL cacheExists = [fileManager fileExistsAtPath:[appPath path]];
 
     if(local == YES) {
         NSLog(@"Requesting local copy of %@", appId);
-        
-        
-        //if([fileManager fileExistsAtPath:[appPath path]]) {
-        
-        if(copyIgnore == YES) {
-            
-            //NSLog(@"Found local copy %@", [appPath path]);
-            NSLog(@"copyIgnore set - return %@", [appPath path]);
-            
+        if(cacheExists && !appUpdated) {
+            NSLog(@"Found local copy %@", [appPath path]);
             CDVPluginResult *pluginResult = nil;
 
             NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
@@ -138,29 +151,17 @@
             [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
             return;
         }
-	//TODO remove unnecessary else - dhis
-        else {
-            //NSLog(@"Could not find local copy %@", [appPath path]);
-            NSLog(@"copyIgnore not set %@", [appPath path]);
-        }
     }
-    
-    //dhis
-    //BOOL copyRootApp = [[command argumentAtIndex:5 withDefault:@(NO)] boolValue];
-    
-    if(copyRootApp == YES || copyCordovaAssets == YES) {
+
+    BOOL copyRootApp = [[command argumentAtIndex:5 withDefault:@(NO)] boolValue];
+
+    if(copyRootApp == YES) {
         CDVPluginResult *pluginResult = nil;
         NSError* error = nil;
-        
-        //TODO use fileexistsAtpath instead of createDirectory on existing path (even though it returns success) - dhis
-        //if([fileManager fileExistsAtPath:[appPath path]]) {
-        //  NSLog(@"already have local copy %@", [appPath path]);
-        //}
-        // else {
+
         NSLog(@"Creating app directory %@", [appPath path]);
         [fileManager createDirectoryAtPath:[appPath path] withIntermediateDirectories:YES attributes:nil error:&error];
-        //}
-        
+
         NSError* errorSetting = nil;
         BOOL success = [appPath setResourceValue: [NSNumber numberWithBool: YES]
                                           forKey: NSURLIsExcludedFromBackupKey error: &errorSetting];
@@ -168,16 +169,15 @@
         if(success == NO) {
             NSLog(@"WARNING: %@ might be backed up to iCloud!", [appPath path]);
         }
-        //}  //end dhis
-        
+
         if(error != nil) {
-            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:LOCAL_ERR];
+            NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+            [message setObject:[NSNumber numberWithInteger:LOCAL_ERR] forKey:@"type"];
+            [message setObject:[NSNumber numberWithInteger:-1] forKey:@"responseCode"];
+            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
             NSLog(@"%@", [error localizedDescription]);
-        }
-        else
-        {
-            //calling copy method depending on copyRootApp OR copyCordovaAssets args - dhis
-            [self copyCordovaAssets:[appPath path] copyRootApp:copyRootApp];
+        } else if(!cacheExists || appUpdated) {
+            [self copyCordovaAssets:[appPath path] copyRootApp:YES];
             if(src == nil) {
                 NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
                 [message setObject:[appPath path] forKey:@"localPath"];
@@ -223,29 +223,34 @@
     NSString* src = [command argumentAtIndex:0 withDefault:nil];
     NSString* appId = [command argumentAtIndex:1];
     NSNumber* timeout = [command argumentAtIndex:6 withDefault:[NSNumber numberWithDouble:15]];
+    BOOL validateSrc = [[command argumentAtIndex:9 withDefault:@(YES)] boolValue];
 
     self.session = [self backgroundSession:timeout];
-
-    // checking if URL is valid
     NSURL *srcURL = [NSURL URLWithString:src];
-    NSMutableURLRequest *urlRequest = [NSMutableURLRequest requestWithURL:srcURL];
-    [urlRequest setHTTPMethod:@"HEAD"];
-
+    
     // Setting headers (do changes also in download url, or better extract setting the following lines to a function)
     NSDictionary *headers = [command argumentAtIndex:3 withDefault:nil andClass:[NSDictionary class]];
-    if(headers != nil) {
-        for (NSString* header in [headers allKeys]) {
-            NSLog(@"Setting header %@ %@", header, [headers objectForKey:header]);
-            [urlRequest addValue:[headers objectForKey:header] forHTTPHeaderField:header];
+    
+    // checking if URL is valid
+    BOOL srcIsValid = YES;
+    
+    if (validateSrc == YES) {
+        NSMutableURLRequest *urlRequest = [NSMutableURLRequest requestWithURL:srcURL];
+        [urlRequest setHTTPMethod:@"HEAD"];
+        
+        [self setHeaders:urlRequest :headers];
+
+        // request just to check if url is correct and server is available
+        NSHTTPURLResponse *response = nil;
+        NSError *error = nil;
+        [NSURLConnection sendSynchronousRequest:urlRequest returningResponse:&response error:&error];
+        
+        if (error || response.statusCode >= 400) {
+            srcIsValid = false;
         }
     }
 
-    // request just to check if url is correct and server is available
-    NSHTTPURLResponse *response = nil;
-    NSError *error = nil;
-    [NSURLConnection sendSynchronousRequest:urlRequest returningResponse:&response error:&error];
-
-    if(srcURL && srcURL.scheme && srcURL.host && error == nil && response.statusCode < 400) {
+    if(srcURL && srcURL.scheme && srcURL.host && srcIsValid == YES) {
 
         BOOL trustHost = (BOOL) [command argumentAtIndex:7 withDefault:@(NO)];
 
@@ -277,14 +282,8 @@
         } else {
             NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:downloadURL];
             request.timeoutInterval = 15.0;
-            // Setting headers (do changes also in check if url is valid, or better extract setting the following lines to a function)
-            NSDictionary *headers = [command argumentAtIndex:3 withDefault:nil andClass:[NSDictionary class]];
-            if(headers != nil) {
-                for (NSString* header in [headers allKeys]) {
-                    NSLog(@"Setting header %@ %@", header, [headers objectForKey:header]);
-                    [request addValue:[headers objectForKey:header] forHTTPHeaderField:header];
-                }
-            }
+            
+            [self setHeaders:request :headers];
 
             NSURLSessionDownloadTask *downloadTask = [self.session downloadTaskWithRequest:request];
 
@@ -306,12 +305,25 @@
 
     } else {
         NSLog(@"Invalid src URL %@", src);
-        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:INVALID_URL_ERR];
+        NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+        [message setObject:[NSNumber numberWithInteger:INVALID_URL_ERR] forKey:@"type"];
+        [message setObject:[NSNumber numberWithInteger:-1] forKey:@"responseCode"];
+        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
     }
 
     [pluginResult setKeepCallbackAsBool:YES];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
 
+}
+
+- (void)setHeaders:(NSMutableURLRequest*)request :(NSDictionary*)headers {
+    // Setting headers (do changes also in check if url is valid, or better extract setting the following lines to a function)
+    if(headers != nil) {
+        for (NSString* header in [headers allKeys]) {
+            NSLog(@"Setting header %@ %@", header, [headers objectForKey:header]);
+            [request addValue:[headers objectForKey:header] forHTTPHeaderField:header];
+        }
+    }
 }
 
 - (void)cancel:(CDVInvokedUrlCommand *)command {
@@ -427,6 +439,16 @@
     if(success) {
         if(sTask) {
             sTask.archivePath = [sourceURL path];
+
+            NSFileManager *fileManager = [NSFileManager defaultManager];
+            NSString* type = [sTask.command argumentAtIndex:2 withDefault:@"replace"];
+            BOOL replace = [type isEqualToString:@"replace"];
+            NSURL *dstURL = [libraryDirectory URLByAppendingPathComponent:[sTask appId]];
+            if([fileManager fileExistsAtPath:[dstURL path]] && replace == YES) {
+                NSLog(@"%@ already exists. Deleting it since type is set to `replace`", [dstURL path]);
+                [fileManager removeItemAtURL:dstURL error:NULL];
+            }
+
             if(sTask.extractArchive == YES && [self isZipArchive:[sourceURL path]]) {
                 // FIXME there is probably a better way to do this
                 NSURL *storageDirectory = [ContentSync getStorageDirectory];
@@ -437,7 +459,6 @@
                 [self unzip:command];
             } else {
                 NSURL *srcURL = [NSURL fileURLWithPath:[sTask archivePath]];
-                NSURL *dstURL = [libraryDirectory URLByAppendingPathComponent:[sTask appId]];
                 NSError* error = nil;
                 NSError *errorCopy;
                 BOOL success;
@@ -462,7 +483,12 @@
         NSLog(@"Sync Failed - Copy Failed - %@", [errorCopy localizedDescription]);
 
         CDVPluginResult* pluginResult = nil;
-        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:CONNECTION_ERR];
+
+        NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+        [message setObject:[NSNumber numberWithInteger:CONNECTION_ERR] forKey:@"type"];
+        [message setObject:[NSNumber numberWithInteger:-1] forKey:@"responseCode"];
+        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
+
         [self.commandDelegate sendPluginResult:pluginResult callbackId:sTask.command.callbackId];
     }
 }
@@ -477,7 +503,12 @@
         if(error == nil) {
             if([(NSHTTPURLResponse*)[task response] statusCode] != 200) {
                 NSLog(@"Task: %@ completed with HTTP Error Code: %ld", task, (long)[(NSHTTPURLResponse*)[task response] statusCode]);
-                pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:CONNECTION_ERR];
+
+                NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+                [message setObject:[NSNumber numberWithInteger:CONNECTION_ERR] forKey:@"type"];
+                [message setObject:[NSNumber numberWithInteger:[(NSHTTPURLResponse*)[task response] statusCode]] forKey:@"responseCode"];
+                pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
+
                 NSFileManager *fileManager = [NSFileManager defaultManager];
                 if([fileManager fileExistsAtPath:[sTask archivePath]]) {
                     NSLog(@"Deleting archive. It's probably an HTTP Error Page anyways");
@@ -502,7 +533,12 @@
             }
         } else {
             NSLog(@"Task: %@ completed with error: %@", task, [error localizedDescription]);
-            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:CONNECTION_ERR];
+
+            NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+            [message setObject:[NSNumber numberWithInteger:CONNECTION_ERR] forKey:@"type"];
+            [message setObject:[NSNumber numberWithInteger:[(NSHTTPURLResponse*)[task response] statusCode]] forKey:@"responseCode"];
+            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
+
             [self removeSyncTask:sTask];
         }
         if(![[error localizedDescription]  isEqual: @"cancelled"]) {
@@ -524,20 +560,16 @@
 
         NSURL* sourceURL = [NSURL URLWithString:[command argumentAtIndex:0]];
         NSURL* destinationURL = [NSURL URLWithString:[command argumentAtIndex:1]];
-        NSString* type = [command argumentAtIndex:2 withDefault:@"replace"];
-        BOOL replace = [type isEqualToString:@"replace"];
-
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        if([fileManager fileExistsAtPath:[destinationURL path]] && replace == YES) {
-            NSLog(@"%@ already exists. Deleting it since type is set to `replace`", [destinationURL path]);
-            [fileManager removeItemAtURL:destinationURL error:NULL];
-        }
 
         @try {
             NSError *error;
             if(![SSZipArchive unzipFileAtPath:[sourceURL path] toDestination:[destinationURL path] overwrite:YES password:nil error:&error delegate:weakSelf]) {
                 NSLog(@"%@ - %@", @"Error occurred during unzipping", [error localizedDescription]);
-                pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:UNZIP_ERR];
+
+                NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+                [message setObject:[NSNumber numberWithInteger:UNZIP_ERR] forKey:@"type"];
+                [message setObject:[NSNumber numberWithInteger:-1] forKey:@"responseCode"];
+                pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
             } else {
                 pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
                 // clean up zip archive
@@ -548,7 +580,10 @@
         }
         @catch (NSException *exception) {
             NSLog(@"%@ - %@", @"Error occurred during unzipping", [exception debugDescription]);
-            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsInt:UNZIP_ERR];
+            NSMutableDictionary* message = [NSMutableDictionary dictionaryWithCapacity:2];
+            [message setObject:[NSNumber numberWithInteger:UNZIP_ERR] forKey:@"type"];
+            [message setObject:[NSNumber numberWithInteger:-1] forKey:@"responseCode"];
+            pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:message];
         }
         [pluginResult setKeepCallbackAsBool:YES];
 
@@ -616,26 +651,78 @@
     return success;
 }
 
+- (void)mergeFolders:(NSString *)srcDir intoPath:(NSString *)dstDir error:(NSError**)err {
+
+    NSLog(@"- mergeFolders: %@\n intoPath: %@", srcDir, dstDir);
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDirectoryEnumerator *srcDirEnum = [fm enumeratorAtPath:srcDir];
+    NSString *subPath;
+    while ((subPath = [srcDirEnum nextObject])) {
+        NSLog(@" subPath: %@", subPath);
+        NSString *srcFullPath =  [srcDir stringByAppendingPathComponent:subPath];
+        NSString *potentialDstPath = [dstDir stringByAppendingPathComponent:subPath];
+
+        // Need to also check if file exists because if it doesn't, value of `isDirectory` is undefined.
+        BOOL isDirectory = ([[NSFileManager defaultManager] fileExistsAtPath:srcFullPath isDirectory:&isDirectory] && isDirectory);
+
+        // Create directory, or delete existing file and move file to destination
+        if (isDirectory) {
+            NSLog(@"   create directory");
+            [fm createDirectoryAtPath:potentialDstPath withIntermediateDirectories:YES attributes:nil error:err];
+            if (err && *err) {
+                NSLog(@"ERROR: %@", *err);
+                return;
+            }
+        }
+        else {
+            if ([fm fileExistsAtPath:potentialDstPath]) {
+                NSLog(@"   removeItemAtPath");
+                [fm removeItemAtPath:potentialDstPath error:err];
+                if (err && *err) {
+                    NSLog(@"ERROR: %@", *err);
+                    return;
+                }
+            }
+
+            NSLog(@"   copyItemAtPath");
+            [fm copyItemAtPath:srcFullPath toPath:potentialDstPath error:err];
+            if (err && *err) {
+                NSLog(@"ERROR: %@", *err);
+                return;
+            }
+        }
+    }
+}
+
 - (BOOL) copyCordovaAssets:(NSString*)unzippedPath {
     return [self copyCordovaAssets:unzippedPath copyRootApp:false];
 }
 
 // TODO GET RID OF THIS
+// THIS F!@#% BS
 - (BOOL) copyCordovaAssets:(NSString*)unzippedPath copyRootApp:(BOOL)copyRootApp {
+    NSLog(@"copyCordovaAssets");
     NSError *errorCopy;
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSURL* destinationURL = [NSURL fileURLWithPath:unzippedPath];
 
     if(copyRootApp == YES) {
         NSLog(@"Copying Root App");
+        NSString* suffix = @"/www";
+        NSString* destDir = unzippedPath;
+
+        if([fileManager fileExistsAtPath:[unzippedPath stringByAppendingString:suffix]]) {
+            destDir = [unzippedPath stringByAppendingString:suffix];
+            NSLog(@"Found %@ folder. Will copy root application to it.", suffix);
+        }
         // we use cordova.js as a way to find the root www/
         NSString* root = [[[self commandDelegate] pathForResource:@"cordova.js"] stringByDeletingLastPathComponent];
 
-        NSURL* sourceURL = [NSURL fileURLWithPath:root];
-        [fileManager removeItemAtURL:destinationURL error:NULL];
-        BOOL success = [fileManager copyItemAtURL:sourceURL toURL:destinationURL error:&errorCopy];
-
-        if(!success) {
+        NSError *mergeError = nil;
+        [self mergeFolders:root intoPath:destDir error:&mergeError];
+        if(mergeError != nil) {
+            NSLog(@"An error occurred: %@", [mergeError localizedDescription]);
             return NO;
         }
 
@@ -694,10 +781,10 @@
         }
         else
         {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
             configuration = [NSURLSessionConfiguration backgroundSessionConfiguration:sessionId];
-            #pragma clang diagnostic pop
+#pragma clang diagnostic pop
         }
 #else
 #if __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_0
